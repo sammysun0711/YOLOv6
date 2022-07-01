@@ -3,6 +3,7 @@
 import os
 import random
 import numpy as np
+from pathlib import Path
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -52,3 +53,11 @@ def set_random_seed(seed, deterministic=False):
     else:
         cudnn.deterministic = False
         cudnn.benchmark = True
+
+def check_model_type(weights):
+    pt, xml = False, False
+    if Path(weights).suffix == ".pt":
+        pt = True
+    elif Path(weights).suffix == ".xml":
+        xml = True
+    return pt, xml

@@ -16,6 +16,7 @@ from yolov6.utils.events import LOGGER, NCOLS
 from yolov6.utils.nms import non_max_suppression
 from yolov6.utils.checkpoint import load_checkpoint
 from yolov6.utils.torch_utils import time_sync, get_model_info
+from yolov6.utils.envs import check_model_type
 
 '''
 python tools/eval.py --task 'train'/'val'/'speed'
@@ -42,19 +43,35 @@ class Evaler:
         self.save_dir = save_dir
 
     def init_model(self, model, weights, task):
+        self.pt, self.xml = check_model_type(weights)
         if task != 'train':
-            model = load_checkpoint(weights, map_location=self.device)
-            self.stride = int(model.stride.max())
-            if self.device.type != 'cpu':
-                model(torch.zeros(1, 3, self.img_size, self.img_size).to(self.device).type_as(next(model.parameters())))
-            # switch to deploy
-            from yolov6.layers.common import RepVGGBlock
-            for layer in model.modules():
-                if isinstance(layer, RepVGGBlock):
-                    layer.switch_to_deploy()
-            LOGGER.info("Switch model to deploy modality.")
-            LOGGER.info("Model Summary: {}".format(get_model_info(model, self.img_size)))
-        model.half() if self.half else model.float()
+            #if Path(weights).suffix == ".pt":
+            if self.pt:
+                model = load_checkpoint(weights, map_location=self.device)
+                self.stride = int(model.stride.max())
+                #print("sef.stride: ", self.stride)
+                if self.device.type != 'cpu':
+                    model(torch.zeros(1, 3, self.img_size, self.img_size).to(self.device).type_as(next(model.parameters())))
+                # switch to deploy
+                from yolov6.layers.common import RepVGGBlock
+                for layer in model.modules():
+                    if isinstance(layer, RepVGGBlock):
+                        layer.switch_to_deploy()
+                LOGGER.info("Switch model to deploy modality.")
+                LOGGER.info("Model Summary: {}".format(get_model_info(model, self.img_size)))
+            #elif Path(weights).suffix == ".xml":
+            if self.xml:
+                from openvino.runtime import Core
+                ie = Core()
+                network = ie.read_model(model=weights, weights=Path(weights).with_suffix('.bin'))
+                model = ie.compile_model(network, device_name="CPU")  # device_name="MYRIAD" for Intel NCS2
+                self.output_layer = next(iter(model.outputs))
+                self.stride = 32
+
+        #if Path(weights).suffix == ".pt":
+        if self.pt:
+            model.half() if self.half else model.float()
+
         return model
 
     def init_data(self, dataloader, task):
@@ -65,9 +82,16 @@ class Evaler:
         self.ids = self.coco80_to_coco91_class() if self.is_coco else list(range(1000))
         if task != 'train':
             pad = 0.0 if task == 'speed' else 0.5
-            dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
-                                           self.img_size, self.batch_size, self.stride, check_labels=True, pad=pad, rect=True,
-                                           data_dict=self.data, task=task)[0]
+
+            if self.pt:
+                dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
+                                               self.img_size, self.batch_size, self.stride, check_labels=True, pad=pad, rect=True,
+                                               class_names=self.data['names'], task=task)[0]
+            elif self.xml:
+                dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
+                                               self.img_size, self.batch_size, self.stride, check_labels=True, pad=pad, rect=False,
+                                               class_names=self.data['names'], task=task)[0]
+
         return dataloader
 
     def predict_model(self, model, dataloader, task):
@@ -87,7 +111,13 @@ class Evaler:
 
             # Inference
             t2 = time_sync()
-            outputs = model(imgs)
+            if self.pt:
+                outputs = model(imgs)
+            elif self.xml:
+                imgs = imgs.cpu().numpy()
+                outputs = model([imgs])[self.output_layer]
+                outputs = torch.tensor(outputs).to(self.device)
+                
             self.speed_result[2] += time_sync() - t2  # inference time
 
             # post-process
@@ -135,7 +165,8 @@ class Evaler:
             cocoEval.summarize()
             map, map50 = cocoEval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
             # Return results
-            model.float()  # for training
+            if self.pt:
+                model.float()  # for training
             if task != 'train':
                 LOGGER.info(f"Results saved to {self.save_dir}")
             return (map50, map)

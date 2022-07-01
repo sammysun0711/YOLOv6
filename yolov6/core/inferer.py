@@ -13,7 +13,7 @@ from yolov6.utils.events import LOGGER, load_yaml
 from yolov6.layers.common import DetectBackend
 from yolov6.data.data_augment import letterbox
 from yolov6.utils.nms import non_max_suppression
-
+from yolov6.utils.envs import check_model_type
 
 class Inferer:
     def __init__(self, source, weights, device, yaml, img_size, half):
@@ -21,6 +21,7 @@ class Inferer:
         from yolov6.data.datasets import IMG_FORMATS
 
         self.__dict__.update(locals())
+        self.pt, self.xml = check_model_type(weights)
 
         # Init model
         self.device = device
@@ -28,19 +29,21 @@ class Inferer:
         cuda = self.device != 'cpu' and torch.cuda.is_available()
         self.device = torch.device('cuda:0' if cuda else 'cpu')
         self.model = DetectBackend(weights, device=self.device)
-        self.stride = self.model.stride
+        #self.stride = self.model.stride
+
         self.class_names = load_yaml(yaml)['names']
         self.img_size = self.check_img_size(self.img_size, s=self.stride)  # check image size
 
-        # Half precision
-        if half & (self.device.type != 'cpu'):
-            self.model.model.half()
-        else:
-            self.model.model.float()
-            half = False
+        if self.pt:
+            # Half precision
+            if half & (self.device.type != 'cpu'):
+                self.model.model.half()
+            else:
+                self.model.model.float()
+                half = False
 
-        if self.device.type != 'cpu':
-            self.model(torch.zeros(1, 3, *self.img_size).to(self.device).type_as(next(self.model.model.parameters())))  # warmup
+            if self.device.type != 'cpu':
+                self.model(torch.zeros(1, 3, *self.img_size).to(self.device).type_as(next(self.model.model.parameters())))  # warmup
 
         # Load data
         if os.path.isdir(source):
@@ -54,8 +57,13 @@ class Inferer:
     def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf):
         ''' Model Inference and results visualization '''
 
+
         for img_path in tqdm(self.img_paths):
-            img, img_src = self.precess_image(img_path, self.img_size, self.stride, self.half)
+            if self.pt:
+                img, img_src = self.precess_image(img_path, self.img_size, self.stride, self.half, auto=True)
+            elif self.xml:
+                img, img_src = self.precess_image(img_path, self.img_size, self.stride, self.half, auto=False)
+
             img = img.to(self.device)
             if len(img.shape) == 3:
                 img = img[None]
@@ -96,15 +104,15 @@ class Inferer:
                     cv2.imwrite(save_path, img_src)
 
     @staticmethod
-    def precess_image(path, img_size, stride, half):
+    def precess_image(path, img_size, stride, half, auto=True):
         '''Process image before image inference.'''
         try:
             img_src = cv2.imread(path)
             assert img_src is not None, f'Invalid image: {path}'
         except Exception as e:
             LOGGER.Warning(e)
-        image = letterbox(img_src, img_size, stride=stride)[0]
 
+        image = letterbox(img_src, img_size, stride=stride, auto=auto)[0]
         # Convert
         image = image.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         image = torch.from_numpy(np.ascontiguousarray(image))

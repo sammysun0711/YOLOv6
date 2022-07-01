@@ -5,6 +5,7 @@ import os
 import os.path as osp
 import sys
 import torch
+from pathlib import Path
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
@@ -78,7 +79,8 @@ def run(data,
     dataloader = val.init_data(dataloader, task)
 
     # eval
-    model.eval()
+    if Path(weights).suffix == ".pt":
+        model.eval()
     pred_result = val.predict_model(model, dataloader, task)
     eval_result = val.eval_model(pred_result, model, dataloader, task)
     return eval_result

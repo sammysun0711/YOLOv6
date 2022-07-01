@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from yolov6.layers.dbb_transforms import *
 
+from yolov6.utils.envs import check_model_type
 
 class SiLU(nn.Module):
     '''Activation of SiLU'''
@@ -488,14 +489,28 @@ class DetectBackend(nn.Module):
     def __init__(self, weights='yolov6s.pt', device=None, dnn=True):
 
         super().__init__()
-        assert isinstance(weights, str) and Path(weights).suffix == '.pt', f'{Path(weights).suffix} format is not supported.'
-        from yolov6.utils.checkpoint import load_checkpoint
-        model = load_checkpoint(weights, map_location=device)
-        stride = int(model.stride.max())
+        assert isinstance(weights, str) and Path(weights).suffix == '.pt' or Path(weights).suffix == ".xml", f'{Path(weights).suffix} format is not supported.'
+        pt, xml = check_model_type(weights)
+        if pt:
+            from yolov6.utils.checkpoint import load_checkpoint
+            model = load_checkpoint(weights, map_location=device)
+            stride = int(model.stride.max())
+        if xml:
+            from openvino.runtime import Core
+            ie = Core()
+            network = ie.read_model(model=weights, weights=Path(weights).with_suffix('.bin'))
+            executable_network = ie.compile_model(network, device_name="CPU")
+            output_layer = next(iter(executable_network.outputs))
+            stride = 32
         self.__dict__.update(locals())  # assign all variables to self
 
     def forward(self, im, val=False):
-        y = self.model(im)
+        if self.pt:
+            y = self.model(im)
+        elif self.xml:
+            im = im.cpu().numpy()  # FP32
+            y = self.executable_network([im])[self.output_layer]
         if isinstance(y, np.ndarray):
             y = torch.tensor(y, device=self.device)
+
         return y
