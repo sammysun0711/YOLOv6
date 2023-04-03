@@ -37,7 +37,7 @@ class Inferer:
             # Init OpenVINO Models start
             core = ov.Core()
             precision = "FP32" if half else "FP16"
-            device = "GPU" if str(self.device)=="cuda:0" else "CPU"
+            device = "GPU" if device !="cpu" else "CPU"
             ov_path = os.path.join(os.path.dirname(weights), precision) + "/" + os.path.splitext(os.path.basename(weights))[0] + ".xml"
             ov_model = core.read_model(ov_path)
             ov_model.reshape([1, 3, -1, -1])
