@@ -20,8 +20,10 @@ from yolov6.data.datasets import LoadData
 from yolov6.utils.nms import non_max_suppression
 from yolov6.utils.torch_utils import get_model_info
 
+import openvino.runtime as ov
+
 class Inferer:
-    def __init__(self, source, webcam, webcam_addr, weights, device, yaml, img_size, half):
+    def __init__(self, source, webcam, webcam_addr, weights, device, yaml, img_size, half, ov_backend=False):
 
         self.__dict__.update(locals())
 
@@ -31,6 +33,19 @@ class Inferer:
         cuda = self.device != 'cpu' and torch.cuda.is_available()
         self.device = torch.device(f'cuda:{device}' if cuda else 'cpu')
         self.model = DetectBackend(weights, device=self.device)
+        if ov_backend:
+            # Init OpenVINO Models start
+            core = ov.Core()
+            precision = "FP32" if half else "FP16"
+            device = "GPU" if str(self.device)=="cuda:0" else "CPU"
+            ov_path = os.path.join(os.path.dirname(weights), precision) + "/" + os.path.splitext(os.path.basename(weights))[0] + ".xml"
+            ov_model = core.read_model(ov_path)
+            ov_model.reshape([1, 3, -1, -1])
+            compiled_model = core.compile_model(ov_model, device)
+            self.infer_request = compiled_model.create_infer_request()
+            print("Init model with OpenVINO backend using {} plugin".format(device))
+            # Init OpenVINO Models ends
+
         self.stride = self.model.stride
         self.class_names = load_yaml(yaml)['names']
         self.img_size = self.check_img_size(self.img_size, s=self.stride)  # check image size
@@ -65,7 +80,7 @@ class Inferer:
 
         LOGGER.info("Switch model to deploy modality.")
 
-    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, view_img=True):
+    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, view_img=True, ov_backend=False):
         ''' Model Inference and results visualization '''
         vid_path, vid_writer, windows = None, None, []
         fps_calculator = CalcFPS()
@@ -76,7 +91,22 @@ class Inferer:
                 img = img[None]
                 # expand for batch dim
             t1 = time.time()
-            pred_results = self.model(img)
+            pred_results = None
+            if ov_backend:
+                #print("Model inference with OpenVINO backend")
+                # Create tensor from external memory
+                input_tensor = ov.Tensor(array=img.cpu().numpy(), shared_memory=True)
+                # Set input tensor for model with one input
+                self.infer_request.set_input_tensor(input_tensor)
+                self.infer_request.start_async()
+                self.infer_request.wait()
+                output = self.infer_request.get_output_tensor()
+                output_buffer = output.data
+                #print("output_buffer: ", output_buffer)
+                pred_results = torch.Tensor(output_buffer)
+            else:
+                pred_results = self.model(img)
+                print("pred_results: ", pred_results)
             det = non_max_suppression(pred_results, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)[0]
             t2 = time.time()
 

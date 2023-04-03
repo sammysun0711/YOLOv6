@@ -69,7 +69,7 @@ if __name__ == '__main__':
         args.batch_size = 'batch'
         dynamic_axes = {
             'images' :{
-                0:'batch',
+                0:'batch', 2:'width', 3: 'height'
             },}
         if args.end2end:
             output_axes = {
